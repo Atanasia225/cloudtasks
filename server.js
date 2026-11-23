@@ -11,14 +11,13 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 })
 
 const VERSION = process.env.APP_VERSION || 'dev';
 const CODE_RE = /^[A-Za-z0-9_-]{16,64}$/;
+const COLS = "id, title, done, to_char(due_date, 'YYYY-MM-DD') AS due_date";
 
 app.use(express.json({ limit: '10kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Обгортка, щоб помилки async-функцій потрапляли в обробник помилок
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
-// Перевірка формату коду списку
 function validCode(req, res, next) {
   if (!CODE_RE.test(req.params.code)) {
     return res.status(400).json({ error: 'Невірний код списку' });
@@ -26,53 +25,84 @@ function validCode(req, res, next) {
   next();
 }
 
-// Службові адреси
+// null або '' → без дати; коректна дата → рядок; інше → undefined (помилка)
+function parseDate(v) {
+  if (v === null || v === '') return null;
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
+  const d = new Date(v + 'T00:00:00Z');
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) return undefined;
+  return v;
+}
+
+function parseTitle(v) {
+  const t = String(v ?? '').trim();
+  return t && t.length <= 200 ? t : undefined;
+}
+
 app.get('/health', (req, res) => res.send('ok'));
 app.get('/api/version', (req, res) => res.json({ version: VERSION }));
 
-// Створити новий список: повертає випадковий код
 app.post('/api/lists', (req, res) => {
-  const code = crypto.randomBytes(16).toString('base64url');
-  res.status(201).json({ code });
+  res.status(201).json({ code: crypto.randomBytes(16).toString('base64url') });
 });
 
-// Отримати завдання списку
 app.get('/api/lists/:code/tasks', validCode, wrap(async (req, res) => {
   const { rows } = await pool.query(
-    'SELECT id, title, done FROM tasks WHERE list_code = $1 ORDER BY id',
+    `SELECT ${COLS} FROM tasks WHERE list_code = $1 ORDER BY due_date NULLS LAST, id`,
     [req.params.code]
   );
   res.json(rows);
 }));
 
-// Додати завдання
 app.post('/api/lists/:code/tasks', validCode, wrap(async (req, res) => {
-  const title = String(req.body?.title ?? '').trim();
-  if (!title || title.length > 200) {
+  const title = parseTitle(req.body?.title);
+  const due = parseDate(req.body?.due_date ?? null);
+  if (title === undefined) {
     return res.status(400).json({ error: 'Назва має бути від 1 до 200 символів' });
   }
+  if (due === undefined) return res.status(400).json({ error: 'Невірна дата' });
+
   const { rows } = await pool.query(
-    'INSERT INTO tasks (list_code, title) VALUES ($1, $2) RETURNING id, title, done',
-    [req.params.code, title]
+    `INSERT INTO tasks (list_code, title, due_date) VALUES ($1, $2, $3) RETURNING ${COLS}`,
+    [req.params.code, title, due]
   );
   res.status(201).json(rows[0]);
 }));
 
-// Позначити виконаним або невиконаним
+// Часткове оновлення: done, title, due_date (будь-яка комбінація)
 app.patch('/api/lists/:code/tasks/:id', validCode, wrap(async (req, res) => {
   const id = Number(req.params.id);
-  if (!Number.isInteger(id) || typeof req.body?.done !== 'boolean') {
-    return res.status(400).json({ error: 'Потрібен id та поле done (true/false)' });
+  const body = req.body ?? {};
+  if (!Number.isInteger(id)) return res.status(400).json({ error: 'Невірний id' });
+
+  const sets = [];
+  const vals = [];
+
+  if ('done' in body) {
+    if (typeof body.done !== 'boolean') return res.status(400).json({ error: 'done має бути true/false' });
+    vals.push(body.done); sets.push(`done = $${vals.length}`);
   }
+  if ('title' in body) {
+    const t = parseTitle(body.title);
+    if (t === undefined) return res.status(400).json({ error: 'Назва має бути від 1 до 200 символів' });
+    vals.push(t); sets.push(`title = $${vals.length}`);
+  }
+  if ('due_date' in body) {
+    const d = parseDate(body.due_date);
+    if (d === undefined) return res.status(400).json({ error: 'Невірна дата' });
+    vals.push(d); sets.push(`due_date = $${vals.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'Нічого оновлювати' });
+
+  vals.push(id, req.params.code);
   const { rows } = await pool.query(
-    'UPDATE tasks SET done = $1 WHERE id = $2 AND list_code = $3 RETURNING id, title, done',
-    [req.body.done, id, req.params.code]
+    `UPDATE tasks SET ${sets.join(', ')} WHERE id = $${vals.length - 1} AND list_code = $${vals.length} RETURNING ${COLS}`,
+    vals
   );
   if (!rows.length) return res.status(404).json({ error: 'Завдання не знайдено' });
   res.json(rows[0]);
 }));
 
-// Видалити завдання
 app.delete('/api/lists/:code/tasks/:id', validCode, wrap(async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isInteger(id)) return res.status(400).json({ error: 'Невірний id' });
@@ -84,18 +114,16 @@ app.delete('/api/lists/:code/tasks/:id', validCode, wrap(async (req, res) => {
   res.status(204).end();
 }));
 
-// Сторінка списку: той самий index.html, код береться з адреси
 app.get('/l/:code', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-// Обробник помилок
 app.use((err, req, res, next) => {
   console.error('Помилка:', err.message);
   res.status(500).json({ error: 'Помилка сервера' });
 });
 
-// Створюємо таблицю при старті (щоб у хмарі все працювало з першого запуску)
+// Схема + зворотно сумісна міграція (стара версія додатка її просто ігнорує)
 await pool.query(`
   CREATE TABLE IF NOT EXISTS tasks (
     id          SERIAL PRIMARY KEY,
@@ -104,6 +132,7 @@ await pool.query(`
     done        BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
+  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_date DATE;
   CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks (list_code);
 `);
 

@@ -4,39 +4,79 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CloudTasks</title>
+  <script>
+    // Тема застосовується до відмальовки сторінки, щоб не було блимання
+    try {
+      const t = localStorage.getItem('theme') ||
+        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+      document.documentElement.dataset.theme = t;
+      document.documentElement.dataset.accent = localStorage.getItem('accent') || 'blue';
+    } catch { document.documentElement.dataset.theme = 'light'; }
+  </script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <main class="card">
-    <header>
+  <main class="app">
+    <header class="top">
       <h1>☁️ CloudTasks</h1>
-      <span id="version" class="badge">…</span>
+      <div class="tools">
+        <span id="version" class="badge">…</span>
+        <div class="swatches" role="group" aria-label="Колір акценту">
+          <button class="swatch" data-accent="blue" aria-label="Синій"></button>
+          <button class="swatch" data-accent="violet" aria-label="Фіолетовий"></button>
+          <button class="swatch" data-accent="green" aria-label="Зелений"></button>
+          <button class="swatch" data-accent="pink" aria-label="Рожевий"></button>
+        </div>
+        <button id="theme" class="icon" aria-label="Змінити тему">🌙</button>
+      </div>
     </header>
 
-    <section id="home" hidden>
-      <p>Список завдань, який однаково відкривається на будь-якому пристрої. Без реєстрації: доступ дає лише посилання.</p>
+    <section id="home" class="panel" hidden>
+      <p>Список завдань із датами та календарем, який однаково відкривається на будь-якому пристрої. Без реєстрації: доступ дає лише посилання.</p>
       <button id="create">Створити список</button>
       <a id="last" class="last" hidden>Відкрити останній список</a>
     </section>
 
-    <section id="list" hidden>
-      <div class="share">
-        <input id="link" readonly aria-label="Посилання на список">
-        <button id="copy" class="secondary" type="button">Копіювати</button>
-      </div>
+    <div id="list" class="layout" hidden>
+      <aside class="panel">
+        <div class="cal-head">
+          <button id="prev" class="icon" aria-label="Попередній місяць">‹</button>
+          <strong id="month"></strong>
+          <button id="next" class="icon" aria-label="Наступний місяць">›</button>
+        </div>
+        <div class="grid weekdays">
+          <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Нд</span>
+        </div>
+        <div id="days" class="grid days"></div>
+        <button id="today" class="secondary small" type="button">Сьогодні</button>
+      </aside>
 
-      <form id="add">
-        <input id="title" maxlength="200" placeholder="Нове завдання…" autocomplete="off" required>
-        <button type="submit">Додати</button>
-      </form>
+      <section class="panel">
+        <div class="share">
+          <input id="link" readonly aria-label="Посилання на список">
+          <button id="copy" class="secondary" type="button">Копіювати</button>
+        </div>
 
-      <ul id="tasks"></ul>
-      <p id="stats" class="stats"></p>
-    </section>
+        <form id="add">
+          <input id="title" maxlength="200" placeholder="Нове завдання…" autocomplete="off" required>
+          <input id="due" type="date" aria-label="Термін">
+          <button type="submit">Додати</button>
+        </form>
+
+        <div class="filters" id="filters">
+          <button class="chip active" data-filter="all" type="button">Усі</button>
+          <button class="chip" data-filter="today" type="button">Сьогодні</button>
+          <button class="chip" data-filter="overdue" type="button">Прострочені</button>
+          <button class="chip" data-filter="done" type="button">Виконані</button>
+        </div>
+
+        <div id="tasks"></div>
+        <p id="stats" class="stats"></p>
+      </section>
+    </div>
 
     <p id="error" role="alert" hidden></p>
   </main>
-
   <script src="/app.js"></script>
 </body>
 </html>

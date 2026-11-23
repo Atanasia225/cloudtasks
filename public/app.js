@@ -1,8 +1,29 @@
 const $ = (sel) => document.querySelector(sel);
 
+const CODE_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const match = location.pathname.match(/^\/l\/([A-Za-z0-9_-]{16,64})$/);
 const code = match ? match[1] : null;
 
+const now = new Date();
+const state = {
+  tasks: [],
+  filter: 'all',
+  selected: null,                                   // вибраний день (YYYY-MM-DD)
+  month: new Date(now.getFullYear(), now.getMonth(), 1),
+  editing: null,                                    // id завдання в режимі редагування
+};
+
+// ---------- Дати (локальний час, без UTC-зсувів) ----------
+const pad = (n) => String(n).padStart(2, '0');
+const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parts = (s) => s.split('-').map(Number);
+const addDays = (s, n) => { const [y, m, d] = parts(s); return ymd(new Date(y, m - 1, d + n)); };
+const fmtDate = (s) => {
+  const [y, m, d] = parts(s);
+  return new Intl.DateTimeFormat('uk', { weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(y, m - 1, d));
+};
+
+// ---------- Допоміжне ----------
 function showError(message) {
   const el = $('#error');
   el.textContent = message;
@@ -10,10 +31,7 @@ function showError(message) {
 }
 
 async function api(path, options = {}) {
-  const res = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
+  const res = await fetch(path, { headers: { 'Content-Type': 'application/json' }, ...options });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error(body.error || 'Помилка запиту');
@@ -21,7 +39,6 @@ async function api(path, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-// Версія додатка (під час rolling update видно, яка ревізія відповіла)
 async function loadVersion() {
   try {
     const { version } = await api('/api/version');
@@ -31,97 +48,221 @@ async function loadVersion() {
   }
 }
 
-// Остання відкрита сторінка запам'ятовується лише в цьому браузері
-function rememberList() {
-  try { localStorage.setItem('lastList', code); } catch {}
-}
-function lastList() {
-  try { return localStorage.getItem('lastList'); } catch { return null; }
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children);
+  return node;
 }
 
-// ---------- Головна сторінка ----------
+// ---------- Тема ----------
+function initTheme() {
+  const root = document.documentElement;
+  const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+  const btn = $('#theme');
+  const sync = () => { btn.textContent = root.dataset.theme === 'dark' ? '☀️' : '🌙'; };
+  sync();
+  btn.addEventListener('click', () => {
+    const t = root.dataset.theme === 'dark' ? 'light' : 'dark';
+    root.dataset.theme = t;
+    save('theme', t);
+    sync();
+  });
+  document.querySelectorAll('.swatch').forEach((s) =>
+    s.addEventListener('click', () => {
+      root.dataset.accent = s.dataset.accent;
+      save('accent', s.dataset.accent);
+    })
+  );
+}
+
+// ---------- Головна ----------
+function lastList() { try { return localStorage.getItem('lastList'); } catch { return null; } }
+function rememberList() { try { localStorage.setItem('lastList', code); } catch {} }
+
 function initHome() {
   $('#home').hidden = false;
-
   const last = lastList();
-  if (last && /^[A-Za-z0-9_-]{16,64}$/.test(last)) {
+  if (last && CODE_RE.test(last)) {
     $('#last').hidden = false;
     $('#last').href = '/l/' + last;
   }
-
   $('#create').addEventListener('click', async () => {
     try {
-      const { code } = await api('/api/lists', { method: 'POST' });
-      location.href = '/l/' + code;
-    } catch (err) {
-      showError(err.message);
-    }
+      const { code: c } = await api('/api/lists', { method: 'POST' });
+      location.href = '/l/' + c;
+    } catch (err) { showError(err.message); }
   });
 }
 
-// ---------- Сторінка списку ----------
-function renderTasks(tasks) {
-  const ul = $('#tasks');
-  ul.replaceChildren();
+// ---------- Календар ----------
+function renderCalendar() {
+  const y = state.month.getFullYear();
+  const m = state.month.getMonth();
+  const title = new Intl.DateTimeFormat('uk', { month: 'long', year: 'numeric' }).format(state.month);
+  $('#month').textContent = title.charAt(0).toUpperCase() + title.slice(1);
 
-  for (const task of tasks) {
-    const li = document.createElement('li');
-    li.className = task.done ? 'done' : '';
+  const offset = (new Date(y, m, 1).getDay() + 6) % 7;   // тиждень з понеділка
+  const total = new Date(y, m + 1, 0).getDate();
+  const today = ymd(new Date());
 
-    const check = document.createElement('input');
-    check.type = 'checkbox';
-    check.checked = task.done;
-    check.addEventListener('change', () => toggle(task.id, check.checked));
-
-    const title = document.createElement('span');
-    title.className = 'title';
-    title.textContent = task.title; // textContent захищає від XSS
-
-    const del = document.createElement('button');
-    del.className = 'del';
-    del.textContent = '✕';
-    del.setAttribute('aria-label', 'Видалити');
-    del.addEventListener('click', () => remove(task.id));
-
-    li.append(check, title, del);
-    ul.append(li);
+  const byDate = {};
+  for (const t of state.tasks) {
+    if (!t.due_date) continue;
+    const info = (byDate[t.due_date] ||= { open: 0, total: 0 });
+    info.total++;
+    if (!t.done) info.open++;
   }
 
-  const done = tasks.filter((t) => t.done).length;
-  $('#stats').textContent = tasks.length
-    ? `Виконано ${done} з ${tasks.length}`
-    : 'Поки що порожньо. Додайте перше завдання.';
-}
+  const box = $('#days');
+  box.replaceChildren();
+  for (let i = 0; i < offset; i++) box.append(el('span'));
 
-async function load() {
-  try {
-    renderTasks(await api(`/api/lists/${code}/tasks`));
-    showError('');
-  } catch (err) {
-    showError(err.message);
+  for (let d = 1; d <= total; d++) {
+    const key = `${y}-${pad(m + 1)}-${pad(d)}`;
+    const b = el('button', { type: 'button', className: 'day', textContent: d });
+    if (key === today) b.classList.add('today');
+    if (key === state.selected) b.classList.add('selected');
+    const info = byDate[key];
+    if (info) {
+      const cls = info.open ? (key < today ? 'late' : 'open') : 'done';
+      b.append(el('i', { className: 'dot ' + cls }));
+      b.title = `Невиконано: ${info.open} з ${info.total}`;
+    }
+    b.addEventListener('click', () => selectDay(key));
+    box.append(b);
   }
 }
 
-async function toggle(id, done) {
-  try {
-    await api(`/api/lists/${code}/tasks/${id}`, {
-      method: 'PATCH',
-      body: JSON.stringify({ done }),
+function selectDay(key) {
+  state.selected = state.selected === key ? null : key;
+  if (state.selected) $('#due').value = state.selected;
+  render();
+}
+
+// ---------- Список завдань ----------
+function visibleTasks() {
+  const today = ymd(new Date());
+  let list = state.tasks;
+  if (state.selected) list = list.filter((t) => t.due_date === state.selected);
+  if (state.filter === 'today') list = list.filter((t) => t.due_date === today);
+  if (state.filter === 'overdue') list = list.filter((t) => !t.done && t.due_date && t.due_date < today);
+  if (state.filter === 'done') list = list.filter((t) => t.done);
+  return list;
+}
+
+function groupLabel(key, today) {
+  if (key === 'none') return 'Без дати';
+  if (key === today) return 'Сьогодні';
+  if (key === addDays(today, 1)) return 'Завтра';
+  return fmtDate(key) + (key < today ? ' · минуло' : '');
+}
+
+function taskRow(task) {
+  if (state.editing === task.id) return editRow(task);
+
+  const check = el('input', { type: 'checkbox', checked: task.done });
+  check.addEventListener('change', () => patch(task.id, { done: check.checked }));
+
+  const title = el('span', { className: 'title', textContent: task.title }); // textContent захищає від XSS
+  title.addEventListener('dblclick', () => startEdit(task.id));
+
+  const edit = el('button', { className: 'mini', textContent: '✏️', title: 'Редагувати' });
+  edit.setAttribute('aria-label', 'Редагувати');
+  edit.addEventListener('click', () => startEdit(task.id));
+
+  const del = el('button', { className: 'mini del', textContent: '✕', title: 'Видалити' });
+  del.setAttribute('aria-label', 'Видалити');
+  del.addEventListener('click', () => remove(task.id));
+
+  return el('li', { className: task.done ? 'done' : '' }, check, title, edit, del);
+}
+
+function editRow(task) {
+  const title = el('input', { value: task.title, maxLength: 200 });
+  title.setAttribute('aria-label', 'Назва');
+  const due = el('input', { type: 'date', value: task.due_date || '' });
+  due.setAttribute('aria-label', 'Термін');
+
+  const save = async () => {
+    const t = title.value.trim();
+    if (!t) return;
+    await patch(task.id, { title: t, due_date: due.value || null });
+  };
+  const cancel = () => { state.editing = null; render(); };
+
+  const saveBtn = el('button', { className: 'mini', textContent: 'Зберегти', type: 'button' });
+  saveBtn.addEventListener('click', save);
+  const cancelBtn = el('button', { className: 'mini', textContent: 'Скасувати', type: 'button' });
+  cancelBtn.addEventListener('click', cancel);
+
+  for (const input of [title, due]) {
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') save();
+      if (e.key === 'Escape') cancel();
     });
-  } catch (err) {
-    showError(err.message);
   }
-  load();
+  setTimeout(() => title.focus(), 0);
+  return el('li', { className: 'edit' }, title, due, saveBtn, cancelBtn);
+}
+
+function renderTasks() {
+  const today = ymd(new Date());
+  const list = visibleTasks();
+  const box = $('#tasks');
+  box.replaceChildren();
+
+  const groups = new Map();   // порядок як із сервера: за датою, «без дати» в кінці
+  for (const t of list) {
+    const key = t.due_date || 'none';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(t);
+  }
+
+  for (const [key, tasks] of groups) {
+    const late = key !== 'none' && key < today && tasks.some((t) => !t.done);
+    const ul = el('ul');
+    ul.append(...tasks.map(taskRow));
+    box.append(el('div', { className: 'group' + (late ? ' late' : '') }, el('h3', { textContent: groupLabel(key, today) }), ul));
+  }
+
+  const done = state.tasks.filter((t) => t.done).length;
+  const overdue = state.tasks.filter((t) => !t.done && t.due_date && t.due_date < today).length;
+  $('#stats').textContent = !state.tasks.length
+    ? 'Поки що порожньо. Додайте перше завдання.'
+    : !list.length
+      ? 'За цим фільтром нічого немає.'
+      : `Виконано ${done} з ${state.tasks.length}` + (overdue ? ` · прострочено ${overdue}` : '');
+}
+
+function render() { renderCalendar(); renderTasks(); }
+
+// ---------- Дії ----------
+async function load(force = false) {
+  if (state.editing !== null && !force) return;     // не заважаємо редагуванню
+  try {
+    state.tasks = await api(`/api/lists/${code}/tasks`);
+    showError('');
+    render();
+  } catch (err) { showError(err.message); }
+}
+
+async function patch(id, body) {
+  state.editing = null;
+  try {
+    await api(`/api/lists/${code}/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
+  } catch (err) { showError(err.message); }
+  await load(true);
 }
 
 async function remove(id) {
+  state.editing = null;
   try {
     await api(`/api/lists/${code}/tasks/${id}`, { method: 'DELETE' });
-  } catch (err) {
-    showError(err.message);
-  }
-  load();
+  } catch (err) { showError(err.message); }
+  await load(true);
 }
+
+function startEdit(id) { state.editing = id; renderTasks(); }
 
 function initList() {
   rememberList();
@@ -132,34 +273,46 @@ function initList() {
     try {
       await navigator.clipboard.writeText(location.href);
       $('#copy').textContent = 'Скопійовано ✓';
-    } catch {
-      $('#link').select();
-    }
+    } catch { $('#link').select(); }
     setTimeout(() => ($('#copy').textContent = 'Копіювати'), 1500);
   });
 
   $('#add').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const input = $('#title');
-    const title = input.value.trim();
+    const title = $('#title').value.trim();
     if (!title) return;
     try {
       await api(`/api/lists/${code}/tasks`, {
         method: 'POST',
-        body: JSON.stringify({ title }),
+        body: JSON.stringify({ title, due_date: $('#due').value || null }),
       });
-      input.value = '';
-    } catch (err) {
-      showError(err.message);
-    }
-    load();
+      $('#title').value = '';
+    } catch (err) { showError(err.message); }
+    load(true);
   });
 
-  load();
-  // Синхронізація: підтягуємо зміни з інших пристроїв кожні 5 секунд
-  setInterval(() => { if (!document.hidden) load(); }, 5000);
+  $('#filters').addEventListener('click', (e) => {
+    const chip = e.target.closest('.chip');
+    if (!chip) return;
+    state.filter = chip.dataset.filter;
+    document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
+    renderTasks();
+  });
+
+  $('#prev').addEventListener('click', () => { state.month = new Date(state.month.getFullYear(), state.month.getMonth() - 1, 1); renderCalendar(); });
+  $('#next').addEventListener('click', () => { state.month = new Date(state.month.getFullYear(), state.month.getMonth() + 1, 1); renderCalendar(); });
+  $('#today').addEventListener('click', () => {
+    state.month = new Date(now.getFullYear(), now.getMonth(), 1);
+    state.selected = ymd(new Date());
+    $('#due').value = state.selected;
+    render();
+  });
+
+  load(true);
+  setInterval(() => { if (!document.hidden) load(); }, 5000);   // синхронізація між пристроями
 }
 
 // ---------- Старт ----------
+initTheme();
 loadVersion();
 code ? initList() : initHome();
