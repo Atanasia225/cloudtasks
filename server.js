@@ -11,7 +11,7 @@ const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, max: 5 })
 
 const VERSION = process.env.APP_VERSION || 'dev';
 const CODE_RE = /^[A-Za-z0-9_-]{16,64}$/;
-const COLS = "id, title, done, to_char(due_date, 'YYYY-MM-DD') AS due_date";
+const COLS = 'id, title, description, done, created_at';
 
 app.use(express.json({ limit: '10kb' }));
 app.use(express.static(path.join(__dirname, 'public')));
@@ -25,18 +25,14 @@ function validCode(req, res, next) {
   next();
 }
 
-// null або '' → без дати; коректна дата → рядок; інше → undefined (помилка)
-function parseDate(v) {
-  if (v === null || v === '') return null;
-  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return undefined;
-  const d = new Date(v + 'T00:00:00Z');
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v) return undefined;
-  return v;
-}
-
+// Повертає очищений текст або undefined, якщо значення некоректне
 function parseTitle(v) {
   const t = String(v ?? '').trim();
   return t && t.length <= 200 ? t : undefined;
+}
+function parseDesc(v) {
+  const t = String(v ?? '').trim();
+  return t.length <= 1000 ? t : undefined;
 }
 
 app.get('/health', (req, res) => res.send('ok'));
@@ -48,7 +44,7 @@ app.post('/api/lists', (req, res) => {
 
 app.get('/api/lists/:code/tasks', validCode, wrap(async (req, res) => {
   const { rows } = await pool.query(
-    `SELECT ${COLS} FROM tasks WHERE list_code = $1 ORDER BY due_date NULLS LAST, id`,
+    `SELECT ${COLS} FROM tasks WHERE list_code = $1 ORDER BY id DESC`,
     [req.params.code]
   );
   res.json(rows);
@@ -56,20 +52,21 @@ app.get('/api/lists/:code/tasks', validCode, wrap(async (req, res) => {
 
 app.post('/api/lists/:code/tasks', validCode, wrap(async (req, res) => {
   const title = parseTitle(req.body?.title);
-  const due = parseDate(req.body?.due_date ?? null);
+  const description = parseDesc(req.body?.description);
   if (title === undefined) {
     return res.status(400).json({ error: 'Назва має бути від 1 до 200 символів' });
   }
-  if (due === undefined) return res.status(400).json({ error: 'Невірна дата' });
-
+  if (description === undefined) {
+    return res.status(400).json({ error: 'Опис має бути не довшим за 1000 символів' });
+  }
   const { rows } = await pool.query(
-    `INSERT INTO tasks (list_code, title, due_date) VALUES ($1, $2, $3) RETURNING ${COLS}`,
-    [req.params.code, title, due]
+    `INSERT INTO tasks (list_code, title, description) VALUES ($1, $2, $3) RETURNING ${COLS}`,
+    [req.params.code, title, description]
   );
   res.status(201).json(rows[0]);
 }));
 
-// Часткове оновлення: done, title, due_date (будь-яка комбінація)
+// Часткове оновлення: done, title, description (будь-яка комбінація)
 app.patch('/api/lists/:code/tasks/:id', validCode, wrap(async (req, res) => {
   const id = Number(req.params.id);
   const body = req.body ?? {};
@@ -87,10 +84,10 @@ app.patch('/api/lists/:code/tasks/:id', validCode, wrap(async (req, res) => {
     if (t === undefined) return res.status(400).json({ error: 'Назва має бути від 1 до 200 символів' });
     vals.push(t); sets.push(`title = $${vals.length}`);
   }
-  if ('due_date' in body) {
-    const d = parseDate(body.due_date);
-    if (d === undefined) return res.status(400).json({ error: 'Невірна дата' });
-    vals.push(d); sets.push(`due_date = $${vals.length}`);
+  if ('description' in body) {
+    const d = parseDesc(body.description);
+    if (d === undefined) return res.status(400).json({ error: 'Опис має бути не довшим за 1000 символів' });
+    vals.push(d); sets.push(`description = $${vals.length}`);
   }
   if (!sets.length) return res.status(400).json({ error: 'Нічого оновлювати' });
 
@@ -123,7 +120,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Помилка сервера' });
 });
 
-// Схема + зворотно сумісна міграція (стара версія додатка її просто ігнорує)
+// Схема і зворотно сумісна міграція (стара версія додатка нові колонки ігнорує)
 await pool.query(`
   CREATE TABLE IF NOT EXISTS tasks (
     id          SERIAL PRIMARY KEY,
@@ -132,7 +129,7 @@ await pool.query(`
     done        BOOLEAN     NOT NULL DEFAULT FALSE,
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
   );
-  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS due_date DATE;
+  ALTER TABLE tasks ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
   CREATE INDEX IF NOT EXISTS idx_tasks_list ON tasks (list_code);
 `);
 

@@ -4,24 +4,24 @@ const CODE_RE = /^[A-Za-z0-9_-]{16,64}$/;
 const match = location.pathname.match(/^\/l\/([A-Za-z0-9_-]{16,64})$/);
 const code = match ? match[1] : null;
 
-const now = new Date();
 const state = {
   tasks: [],
   filter: 'all',
-  selected: null,                                   // вибраний день (YYYY-MM-DD)
-  month: new Date(now.getFullYear(), now.getMonth(), 1),
-  editing: null,                                    // id завдання в режимі редагування
+  editId: null,
+  seen: new Set(),     // id завдань, які вже були показані (для анімації нових)
 };
 
-// ---------- Дати (локальний час, без UTC-зсувів) ----------
 const pad = (n) => String(n).padStart(2, '0');
-const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
-const parts = (s) => s.split('-').map(Number);
-const addDays = (s, n) => { const [y, m, d] = parts(s); return ymd(new Date(y, m - 1, d + n)); };
-const fmtDate = (s) => {
-  const [y, m, d] = parts(s);
-  return new Intl.DateTimeFormat('uk', { weekday: 'short', day: 'numeric', month: 'long' }).format(new Date(y, m - 1, d));
-};
+const cap = (s) => s.charAt(0).toUpperCase() + s.slice(1);
+
+// ---------- Годинник ----------
+function tick() {
+  const d = new Date();
+  $('#time').textContent = `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  $('#date').textContent = cap(
+    new Intl.DateTimeFormat('uk', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).format(d)
+  );
+}
 
 // ---------- Допоміжне ----------
 function showError(message) {
@@ -45,24 +45,32 @@ function el(tag, props = {}, ...children) {
   return node;
 }
 
-// ---------- Вигляд: фон і акцент ----------
+const fmtCreated = (iso) =>
+  new Intl.DateTimeFormat('uk', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    .format(new Date(iso));
+
+// ---------- Налаштування фону ----------
 function initLook() {
   const custom = $('#bgCustom');
-  const current = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
-  if (/^#[0-9a-f]{6}$/i.test(current)) custom.value = current;
+  const swatches = document.querySelectorAll('#bgs .swatch');
+  const mark = (hex) =>
+    swatches.forEach((s) => s.classList.toggle('active', s.dataset.bg.toLowerCase() === hex.toLowerCase()));
 
-  document.querySelectorAll('#bgs .swatch').forEach((s) => {
-    s.style.background = s.dataset.bg;
+  const current = document.documentElement.dataset.bg || '#f5f7fb';
+  custom.value = current;
+  mark(current);
+
+  swatches.forEach((s) =>
     s.addEventListener('click', () => {
       applyBg(s.dataset.bg, true);
       custom.value = s.dataset.bg;
-    });
-  });
-  custom.addEventListener('input', () => applyBg(custom.value, true));
-
-  document.querySelectorAll('#accents .swatch').forEach((s) =>
-    s.addEventListener('click', () => applyAccent(s.dataset.accent, true))
+      mark(s.dataset.bg);
+    })
   );
+  custom.addEventListener('input', () => {
+    applyBg(custom.value, true);
+    mark(custom.value);
+  });
 }
 
 // ---------- Головна ----------
@@ -84,151 +92,59 @@ function initHome() {
   });
 }
 
-// ---------- Календар ----------
-function renderCalendar() {
-  const y = state.month.getFullYear();
-  const m = state.month.getMonth();
-  const title = new Intl.DateTimeFormat('uk', { month: 'long', year: 'numeric' }).format(state.month);
-  $('#month').textContent = title.charAt(0).toUpperCase() + title.slice(1);
-
-  const offset = (new Date(y, m, 1).getDay() + 6) % 7;   // тиждень з понеділка
-  const total = new Date(y, m + 1, 0).getDate();
-  const today = ymd(new Date());
-
-  const byDate = {};
-  for (const t of state.tasks) {
-    if (!t.due_date) continue;
-    const info = (byDate[t.due_date] ||= { open: 0, total: 0 });
-    info.total++;
-    if (!t.done) info.open++;
-  }
-
-  const box = $('#days');
-  box.replaceChildren();
-  for (let i = 0; i < offset; i++) box.append(el('span'));
-
-  for (let d = 1; d <= total; d++) {
-    const key = `${y}-${pad(m + 1)}-${pad(d)}`;
-    const b = el('button', { type: 'button', className: 'day', textContent: d });
-    if (key === today) b.classList.add('today');
-    if (key === state.selected) b.classList.add('selected');
-    const info = byDate[key];
-    if (info) {
-      const cls = info.open ? (key < today ? 'late' : 'open') : 'done';
-      b.append(el('i', { className: 'dot ' + cls }));
-      b.title = `Невиконано: ${info.open} з ${info.total}`;
-    }
-    b.addEventListener('click', () => selectDay(key));
-    box.append(b);
-  }
-}
-
-function selectDay(key) {
-  state.selected = state.selected === key ? null : key;
-  $('#due').value = state.selected || '';
-  render();
-}
-
-// ---------- Список завдань ----------
+// ---------- Список ----------
 function visibleTasks() {
-  const today = ymd(new Date());
-  let list = state.tasks;
-  if (state.selected) list = list.filter((t) => t.due_date === state.selected);
-  if (state.filter === 'today') list = list.filter((t) => t.due_date === today);
-  if (state.filter === 'overdue') list = list.filter((t) => !t.done && t.due_date && t.due_date < today);
-  if (state.filter === 'done') list = list.filter((t) => t.done);
-  return list;
+  if (state.filter === 'active') return state.tasks.filter((t) => !t.done);
+  if (state.filter === 'done') return state.tasks.filter((t) => t.done);
+  return state.tasks;
 }
 
-function groupLabel(key, today) {
-  if (key === 'none') return 'Без дати';
-  if (key === today) return 'Сьогодні';
-  if (key === addDays(today, 1)) return 'Завтра';
-  return fmtDate(key) + (key < today ? ' · минуло' : '');
-}
+function taskItem(t) {
+  const check = el('input', { type: 'checkbox', checked: t.done });
+  check.setAttribute('aria-label', 'Позначити виконаним');
+  check.addEventListener('change', () => patch(t.id, { done: check.checked }));
 
-function taskRow(task) {
-  if (state.editing === task.id) return editRow(task);
+  const body = el('div', { className: 'body' }, el('div', { className: 'name', textContent: t.title })); // textContent захищає від XSS
+  if (t.description) body.append(el('p', { className: 'note', textContent: t.description }));
+  body.append(
+    el('div', { className: 'meta' },
+      el('span', { textContent: 'Створено: ' + fmtCreated(t.created_at) }),
+      el('span', { className: 'badge ' + (t.done ? 'done' : 'active'), textContent: t.done ? 'Виконане' : 'Активне' })
+    )
+  );
 
-  const check = el('input', { type: 'checkbox', checked: task.done });
-  check.addEventListener('change', () => patch(task.id, { done: check.checked }));
-
-  const title = el('span', { className: 'title', textContent: task.title }); // textContent захищає від XSS
-  title.addEventListener('dblclick', () => startEdit(task.id));
-
-  const edit = el('button', { className: 'mini', textContent: '✏️', title: 'Редагувати' });
+  const edit = el('button', { className: 'mini', type: 'button', textContent: '✏️', title: 'Редагувати' });
   edit.setAttribute('aria-label', 'Редагувати');
-  edit.addEventListener('click', () => startEdit(task.id));
+  edit.addEventListener('click', () => openEditor(t));
 
-  const del = el('button', { className: 'mini del', textContent: '🗑', title: 'Видалити' });
+  const del = el('button', { className: 'mini del', type: 'button', textContent: '🗑', title: 'Видалити' });
   del.setAttribute('aria-label', 'Видалити');
-  del.addEventListener('click', () => remove(task.id));
+  del.addEventListener('click', () => remove(t.id));
 
-  return el('li', { className: task.done ? 'done' : '' }, check, title, edit, del);
+  const isNew = !state.seen.has(t.id);
+  state.seen.add(t.id);
+
+  return el('li', { className: 'task' + (t.done ? ' done' : '') + (isNew ? ' new' : '') },
+    check, body, el('div', { className: 'actions' }, edit, del));
 }
 
-function editRow(task) {
-  const title = el('input', { value: task.title, maxLength: 200 });
-  title.setAttribute('aria-label', 'Назва');
-  const due = el('input', { type: 'date', value: task.due_date || '' });
-  due.setAttribute('aria-label', 'Дата');
-
-  const save = async () => {
-    const t = title.value.trim();
-    if (!t) return;
-    await patch(task.id, { title: t, due_date: due.value || null });
-  };
-  const cancel = () => { state.editing = null; render(); };
-
-  const saveBtn = el('button', { className: 'mini', textContent: 'Зберегти', type: 'button' });
-  saveBtn.addEventListener('click', save);
-  const cancelBtn = el('button', { className: 'mini', textContent: 'Скасувати', type: 'button' });
-  cancelBtn.addEventListener('click', cancel);
-
-  for (const input of [title, due]) {
-    input.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') save();
-      if (e.key === 'Escape') cancel();
-    });
-  }
-  setTimeout(() => title.focus(), 0);
-  return el('li', { className: 'edit' }, title, due, saveBtn, cancelBtn);
-}
-
-function renderTasks() {
-  const today = ymd(new Date());
+function render() {
   const list = visibleTasks();
-  const box = $('#tasks');
-  box.replaceChildren();
+  const ul = $('#tasks');
+  ul.replaceChildren(...list.map(taskItem));
 
-  const groups = new Map();   // порядок із сервера: за датою, «без дати» в кінці
-  for (const t of list) {
-    const key = t.due_date || 'none';
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(t);
-  }
+  $('#statTotal').textContent = state.tasks.length;
+  $('#statDone').textContent = state.tasks.filter((t) => t.done).length;
 
-  for (const [key, tasks] of groups) {
-    const late = key !== 'none' && key < today && tasks.some((t) => !t.done);
-    const ul = el('ul');
-    ul.append(...tasks.map(taskRow));
-    box.append(el('div', { className: 'group' + (late ? ' late' : '') }, el('h3', { textContent: groupLabel(key, today) }), ul));
-  }
-
-  const done = state.tasks.filter((t) => t.done).length;
-  const overdue = state.tasks.filter((t) => !t.done && t.due_date && t.due_date < today).length;
-  $('#stats').textContent = !state.tasks.length
+  const empty = $('#empty');
+  empty.hidden = list.length > 0;
+  empty.textContent = !state.tasks.length
     ? 'Поки що порожньо. Додайте перше завдання.'
-    : !list.length
-      ? 'За цим фільтром нічого немає.'
-      : `Виконано ${done} з ${state.tasks.length}` + (overdue ? ` · прострочено ${overdue}` : '');
+    : 'За цим фільтром нічого немає.';
 }
-
-function render() { renderCalendar(); renderTasks(); }
 
 // ---------- Дії ----------
-async function load(force = false) {
-  if (state.editing !== null && !force) return;     // не заважаємо редагуванню
+async function load() {
   try {
     state.tasks = await api(`/api/lists/${code}/tasks`);
     showError('');
@@ -237,27 +153,50 @@ async function load(force = false) {
 }
 
 async function patch(id, body) {
-  state.editing = null;
   try {
     await api(`/api/lists/${code}/tasks/${id}`, { method: 'PATCH', body: JSON.stringify(body) });
   } catch (err) { showError(err.message); }
-  await load(true);
+  await load();
 }
 
 async function remove(id) {
   if (!confirm('Видалити це завдання?')) return;
-  state.editing = null;
   try {
     await api(`/api/lists/${code}/tasks/${id}`, { method: 'DELETE' });
   } catch (err) { showError(err.message); }
-  await load(true);
+  await load();
 }
 
-function startEdit(id) { state.editing = id; renderTasks(); }
+// ---------- Редагування (модальне вікно) ----------
+function openEditor(task) {
+  state.editId = task.id;
+  $('#editTitle').value = task.title;
+  $('#editDesc').value = task.description || '';
+  $('#editor').showModal();
+  $('#editTitle').focus();
+}
+
+function initEditor() {
+  const dlg = $('#editor');
+
+  $('#editCancel').addEventListener('click', () => dlg.close());
+  dlg.addEventListener('click', (e) => { if (e.target === dlg) dlg.close(); });   // клік повз вікно
+  dlg.addEventListener('close', () => { state.editId = null; });
+
+  $('#editForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = $('#editTitle').value.trim();
+    if (!title || state.editId === null) return;
+    const id = state.editId;
+    dlg.close();
+    await patch(id, { title, description: $('#editDesc').value.trim() });
+  });
+}
 
 function initList() {
   rememberList();
   $('#list').hidden = false;
+  initEditor();
 
   $('#add').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -266,11 +205,12 @@ function initList() {
     try {
       await api(`/api/lists/${code}/tasks`, {
         method: 'POST',
-        body: JSON.stringify({ title, due_date: $('#due').value || null }),
+        body: JSON.stringify({ title, description: $('#desc').value.trim() }),
       });
       $('#title').value = '';
+      $('#desc').value = '';
     } catch (err) { showError(err.message); }
-    load(true);
+    load();
   });
 
   $('#filters').addEventListener('click', (e) => {
@@ -278,22 +218,16 @@ function initList() {
     if (!chip) return;
     state.filter = chip.dataset.filter;
     document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('active', c === chip));
-    renderTasks();
-  });
-
-  $('#prev').addEventListener('click', () => { state.month = new Date(state.month.getFullYear(), state.month.getMonth() - 1, 1); renderCalendar(); });
-  $('#next').addEventListener('click', () => { state.month = new Date(state.month.getFullYear(), state.month.getMonth() + 1, 1); renderCalendar(); });
-  $('#today').addEventListener('click', () => {
-    state.month = new Date(now.getFullYear(), now.getMonth(), 1);
-    state.selected = ymd(new Date());
-    $('#due').value = state.selected;
     render();
   });
 
-  load(true);
-  setInterval(() => { if (!document.hidden) load(); }, 5000);   // синхронізація між пристроями
+  load();
+  // Синхронізація між пристроями: підтягуємо зміни кожні 5 секунд
+  setInterval(() => { if (!document.hidden) load(); }, 5000);
 }
 
 // ---------- Старт ----------
 initLook();
+tick();
+setInterval(tick, 1000);
 code ? initList() : initHome();

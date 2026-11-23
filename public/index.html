@@ -4,79 +4,84 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>CloudTasks</title>
-  <script>
-    // Тема застосовується до відмальовки сторінки, щоб не було блимання
-    try {
-      const t = localStorage.getItem('theme') ||
-        (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-      document.documentElement.dataset.theme = t;
-      document.documentElement.dataset.accent = localStorage.getItem('accent') || 'blue';
-    } catch { document.documentElement.dataset.theme = 'light'; }
-  </script>
+  <script src="/theme.js"></script>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
   <main class="app">
     <header class="top">
       <h1>☁️ CloudTasks</h1>
-      <div class="tools">
-        <span id="version" class="badge">…</span>
-        <div class="swatches" role="group" aria-label="Колір акценту">
-          <button class="swatch" data-accent="blue" aria-label="Синій"></button>
-          <button class="swatch" data-accent="violet" aria-label="Фіолетовий"></button>
-          <button class="swatch" data-accent="green" aria-label="Зелений"></button>
-          <button class="swatch" data-accent="pink" aria-label="Рожевий"></button>
+
+      <details class="settings">
+        <summary>⚙️ Налаштування</summary>
+        <div class="pop">
+          <p class="label">Колір фону</p>
+          <div class="swatches" id="bgs">
+            <button type="button" class="swatch" data-bg="#ffffff" style="background:#ffffff" title="Білий" aria-label="Білий"></button>
+            <button type="button" class="swatch" data-bg="#e8f1ff" style="background:#e8f1ff" title="Світло-блакитний" aria-label="Світло-блакитний"></button>
+            <button type="button" class="swatch" data-bg="#f4f6fb" style="background:#f4f6fb" title="Світло-сірий" aria-label="Світло-сірий"></button>
+            <button type="button" class="swatch" data-bg="#efe9ff" style="background:#efe9ff" title="Світло-фіолетовий" aria-label="Світло-фіолетовий"></button>
+            <button type="button" class="swatch" data-bg="#0f172a" style="background:#0f172a" title="Темний" aria-label="Темний"></button>
+          </div>
+          <label class="custom">Власний колір
+            <input type="color" id="bgCustom" value="#f5f7fb">
+          </label>
         </div>
-        <button id="theme" class="icon" aria-label="Змінити тему">🌙</button>
-      </div>
+      </details>
     </header>
 
-    <section id="home" class="panel" hidden>
-      <p>Список завдань із датами та календарем, який однаково відкривається на будь-якому пристрої. Без реєстрації: доступ дає лише посилання.</p>
-      <button id="create">Створити список</button>
+    <section class="card clock" aria-label="Годинник">
+      <div id="time" class="time">00:00:00</div>
+      <div id="date" class="date"></div>
+    </section>
+
+    <section id="home" class="card" hidden>
+      <p>Простий список завдань із описами, який однаково відкривається на будь-якому пристрої. Без реєстрації: доступ дає лише посилання на сторінку списку.</p>
+      <button id="create" type="button">Створити список</button>
       <a id="last" class="last" hidden>Відкрити останній список</a>
     </section>
 
-    <div id="list" class="layout" hidden>
-      <aside class="panel">
-        <div class="cal-head">
-          <button id="prev" class="icon" aria-label="Попередній місяць">‹</button>
-          <strong id="month"></strong>
-          <button id="next" class="icon" aria-label="Наступний місяць">›</button>
-        </div>
-        <div class="grid weekdays">
-          <span>Пн</span><span>Вт</span><span>Ср</span><span>Чт</span><span>Пт</span><span>Сб</span><span>Нд</span>
-        </div>
-        <div id="days" class="grid days"></div>
-        <button id="today" class="secondary small" type="button">Сьогодні</button>
-      </aside>
+    <div id="list" hidden>
+      <div class="stats">
+        <div class="stat"><span id="statTotal">0</span><small>Всього завдань</small></div>
+        <div class="stat"><span id="statDone">0</span><small>Виконано</small></div>
+      </div>
 
-      <section class="panel">
-        <div class="share">
-          <input id="link" readonly aria-label="Посилання на список">
-          <button id="copy" class="secondary" type="button">Копіювати</button>
-        </div>
+      <form id="add" class="card">
+        <input id="title" maxlength="200" placeholder="Назва завдання" autocomplete="off" required>
+        <textarea id="desc" rows="2" maxlength="1000" placeholder="Короткий опис (необов’язково)"></textarea>
+        <button type="submit">Додати завдання</button>
+      </form>
 
-        <form id="add">
-          <input id="title" maxlength="200" placeholder="Нове завдання…" autocomplete="off" required>
-          <input id="due" type="date" aria-label="Термін">
-          <button type="submit">Додати</button>
-        </form>
+      <div class="filters" id="filters">
+        <button class="chip active" data-filter="all" type="button">Усі</button>
+        <button class="chip" data-filter="active" type="button">Активні</button>
+        <button class="chip" data-filter="done" type="button">Виконані</button>
+      </div>
 
-        <div class="filters" id="filters">
-          <button class="chip active" data-filter="all" type="button">Усі</button>
-          <button class="chip" data-filter="today" type="button">Сьогодні</button>
-          <button class="chip" data-filter="overdue" type="button">Прострочені</button>
-          <button class="chip" data-filter="done" type="button">Виконані</button>
-        </div>
-
-        <div id="tasks"></div>
-        <p id="stats" class="stats"></p>
-      </section>
+      <ul id="tasks"></ul>
+      <p id="empty" class="empty" hidden></p>
     </div>
 
     <p id="error" role="alert" hidden></p>
   </main>
+
+  <dialog id="editor">
+    <form id="editForm">
+      <h2>Редагувати завдання</h2>
+      <label>Назва
+        <input id="editTitle" maxlength="200" required autocomplete="off">
+      </label>
+      <label>Нотатка
+        <textarea id="editDesc" rows="4" maxlength="1000"></textarea>
+      </label>
+      <div class="actions">
+        <button type="button" id="editCancel" class="secondary">Скасувати</button>
+        <button type="submit">Зберегти</button>
+      </div>
+    </form>
+  </dialog>
+
   <script src="/app.js"></script>
 </body>
 </html>
