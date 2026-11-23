@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>CloudTasks</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <main class="card">
+    <header>
+      <h1>☁️ CloudTasks</h1>
+      <span id="version" class="badge">…</span>
+    </header>
+
+    <section id="home" hidden>
+      <p>Список завдань, який однаково відкривається на будь-якому пристрої. Без реєстрації: доступ дає лише посилання.</p>
+      <button id="create">Створити список</button>
+      <a id="last" class="last" hidden>Відкрити останній список</a>
+    </section>
+
+    <section id="list" hidden>
+      <div class="share">
+        <input id="link" readonly aria-label="Посилання на список">
+        <button id="copy" class="secondary" type="button">Копіювати</button>
+      </div>
+
+      <form id="add">
+        <input id="title" maxlength="200" placeholder="Нове завдання…" autocomplete="off" required>
+        <button type="submit">Додати</button>
+      </form>
+
+      <ul id="tasks"></ul>
+      <p id="stats" class="stats"></p>
+    </section>
+
+    <p id="error" role="alert" hidden></p>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
