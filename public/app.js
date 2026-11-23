@@ -25,9 +25,9 @@ const fmtDate = (s) => {
 
 // ---------- Допоміжне ----------
 function showError(message) {
-  const el = $('#error');
-  el.textContent = message;
-  el.hidden = !message;
+  const e = $('#error');
+  e.textContent = message;
+  e.hidden = !message;
 }
 
 async function api(path, options = {}) {
@@ -39,39 +39,29 @@ async function api(path, options = {}) {
   return res.status === 204 ? null : res.json();
 }
 
-async function loadVersion() {
-  try {
-    const { version } = await api('/api/version');
-    $('#version').textContent = 'v ' + version;
-  } catch {
-    $('#version').textContent = 'офлайн';
-  }
-}
-
 function el(tag, props = {}, ...children) {
   const node = Object.assign(document.createElement(tag), props);
   node.append(...children);
   return node;
 }
 
-// ---------- Тема ----------
-function initTheme() {
-  const root = document.documentElement;
-  const save = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
-  const btn = $('#theme');
-  const sync = () => { btn.textContent = root.dataset.theme === 'dark' ? '☀️' : '🌙'; };
-  sync();
-  btn.addEventListener('click', () => {
-    const t = root.dataset.theme === 'dark' ? 'light' : 'dark';
-    root.dataset.theme = t;
-    save('theme', t);
-    sync();
-  });
-  document.querySelectorAll('.swatch').forEach((s) =>
+// ---------- Вигляд: фон і акцент ----------
+function initLook() {
+  const custom = $('#bgCustom');
+  const current = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim();
+  if (/^#[0-9a-f]{6}$/i.test(current)) custom.value = current;
+
+  document.querySelectorAll('#bgs .swatch').forEach((s) => {
+    s.style.background = s.dataset.bg;
     s.addEventListener('click', () => {
-      root.dataset.accent = s.dataset.accent;
-      save('accent', s.dataset.accent);
-    })
+      applyBg(s.dataset.bg, true);
+      custom.value = s.dataset.bg;
+    });
+  });
+  custom.addEventListener('input', () => applyBg(custom.value, true));
+
+  document.querySelectorAll('#accents .swatch').forEach((s) =>
+    s.addEventListener('click', () => applyAccent(s.dataset.accent, true))
   );
 }
 
@@ -135,7 +125,7 @@ function renderCalendar() {
 
 function selectDay(key) {
   state.selected = state.selected === key ? null : key;
-  if (state.selected) $('#due').value = state.selected;
+  $('#due').value = state.selected || '';
   render();
 }
 
@@ -170,7 +160,7 @@ function taskRow(task) {
   edit.setAttribute('aria-label', 'Редагувати');
   edit.addEventListener('click', () => startEdit(task.id));
 
-  const del = el('button', { className: 'mini del', textContent: '✕', title: 'Видалити' });
+  const del = el('button', { className: 'mini del', textContent: '🗑', title: 'Видалити' });
   del.setAttribute('aria-label', 'Видалити');
   del.addEventListener('click', () => remove(task.id));
 
@@ -181,7 +171,7 @@ function editRow(task) {
   const title = el('input', { value: task.title, maxLength: 200 });
   title.setAttribute('aria-label', 'Назва');
   const due = el('input', { type: 'date', value: task.due_date || '' });
-  due.setAttribute('aria-label', 'Термін');
+  due.setAttribute('aria-label', 'Дата');
 
   const save = async () => {
     const t = title.value.trim();
@@ -211,7 +201,7 @@ function renderTasks() {
   const box = $('#tasks');
   box.replaceChildren();
 
-  const groups = new Map();   // порядок як із сервера: за датою, «без дати» в кінці
+  const groups = new Map();   // порядок із сервера: за датою, «без дати» в кінці
   for (const t of list) {
     const key = t.due_date || 'none';
     if (!groups.has(key)) groups.set(key, []);
@@ -255,6 +245,7 @@ async function patch(id, body) {
 }
 
 async function remove(id) {
+  if (!confirm('Видалити це завдання?')) return;
   state.editing = null;
   try {
     await api(`/api/lists/${code}/tasks/${id}`, { method: 'DELETE' });
@@ -267,15 +258,6 @@ function startEdit(id) { state.editing = id; renderTasks(); }
 function initList() {
   rememberList();
   $('#list').hidden = false;
-  $('#link').value = location.href;
-
-  $('#copy').addEventListener('click', async () => {
-    try {
-      await navigator.clipboard.writeText(location.href);
-      $('#copy').textContent = 'Скопійовано ✓';
-    } catch { $('#link').select(); }
-    setTimeout(() => ($('#copy').textContent = 'Копіювати'), 1500);
-  });
 
   $('#add').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -313,6 +295,5 @@ function initList() {
 }
 
 // ---------- Старт ----------
-initTheme();
-loadVersion();
+initLook();
 code ? initList() : initHome();
